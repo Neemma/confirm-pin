@@ -1,60 +1,49 @@
 const express = require('express');
 const router = express.Router();
-const africasTalkingHelper = require('./africasTalkingHelper');
-const fs = require('fs');
 
-const BLOCK_REASONS_FILE = 'block_reasons.json';
+const MAX_RETRIES = 3;
+
+let retries = {}; 
+let sessionActive = {}; 
 
 router.post('/', async (req, res) => {
-  const { reason, msisdn } = req.body;
+  const { pin, msisdn } = req.body;
 
-  // Validate msisdn format
-  if (!isValidMsisdn(msisdn)) {
-      return res.status(400).json({ code: 5001, message: 'Invalid msisdn format.' });
+  if (!isValidPayload(req.body)) {
+    return res.status(400).json({ code: 5001, message: 'Invalid request payload. Expected keys: pin, msisdn.' });
   }
 
-  // Save to JSON file
-  saveReasonToFile(msisdn, reason);
-
-  try {
-      const formattedMsisdn = formatMsisdn(msisdn);
-      console.log(formattedMsisdn);
-      console.log(reason);
-
-      await africasTalkingHelper.sendSMS(formattedMsisdn, `Your transaction block request has been received. For Reason: ${reason}`);
-
-      res.status(200).json({ message: 'Request to block transactions received.' });
-      console.log(formattedMsisdn, reason);
-  } catch (error) {
-      console.error('Error sending SMS:', error);
-      res.status(500).json({ message: 'Error processing request.' });
+  if (!retries[msisdn]) {
+    retries[msisdn] = 0; 
+    sessionActive[msisdn] = true;
   }
+
+  const correctPin = '1234';
+
+  if (!sessionActive[msisdn]) {
+    return res.status(400).json({ code: 5000, message: 'Session terminated. Max retries exceeded.' });
+  }
+
+  if (pin !== correctPin) {
+    retries[msisdn]++;
+    console.log(`MSISDN ${msisdn} Retries:`, retries[msisdn]); 
+
+    if (retries[msisdn] >= MAX_RETRIES) {
+      sessionActive[msisdn] = false; // Terminate session upon exceeding max retries
+      return res.status(400).json({ code: 5000, message: 'Wrong PIN. Max retries exceeded. Session terminated.' });
+    } else {
+      return res.status(400).json({ code: 5000, message: 'Wrong PIN.' });
+    }
+  }
+
+  // PIN is correct
+  delete retries[msisdn]; 
+  sessionActive[msisdn] = false; 
+  res.status(200).json({ code: 4000, message: 'PIN accepted.' });
 });
 
-
-function saveReasonToFile(msisdn, reason) {
-  let blockReasons = loadBlockReasons();
-  blockReasons[msisdn] = reason;
-
-  fs.writeFileSync(BLOCK_REASONS_FILE, JSON.stringify(blockReasons));
-}
-
-function loadBlockReasons() {
-  try {
-    const data = fs.readFileSync(BLOCK_REASONS_FILE);
-    return JSON.parse(data);
-  } catch (error) {
-    return {};
-  }
-}
-
-function isValidMsisdn(msisdn) {
-  const msisdnRegex = /^\+254\d{9}$/;
-  return msisdnRegex.test(msisdn);
-}
-
-function formatMsisdn(msisdn) {
-  return msisdn.startsWith('+') ? msisdn : `+${msisdn}`;
+function isValidPayload(payload) {
+  return 'pin' in payload && 'msisdn' in payload;
 }
 
 module.exports = router;
